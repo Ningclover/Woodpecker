@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "woodpecker"
+version = "0.1.0"
+description = "WireCell targeted region selection and debugging tool"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "matplotlib",
+]
+
+[project.scripts]
+woodpecker = "woodpecker.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["woodpecker*"]
