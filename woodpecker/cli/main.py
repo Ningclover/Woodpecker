@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from woodpecker.cli import cmd_mask, cmd_select, cmd_extract, cmd_run_img, cmd_run_clustering, cmd_run_sim_check, cmd_plot_frames
+from woodpecker.cli import cmd_mask, cmd_select, cmd_extract, cmd_run_img, cmd_run_clustering, cmd_run_sim_check, cmd_plot_frames, cmd_compare_waveforms, cmd_select_parallelogram
 
 
 def main(argv=None) -> None:
@@ -25,6 +25,8 @@ def main(argv=None) -> None:
     cmd_run_clustering.add_parser(subparsers)
     cmd_run_sim_check.add_parser(subparsers)
     cmd_plot_frames.add_parser(subparsers)
+    cmd_compare_waveforms.add_parser(subparsers)
+    cmd_select_parallelogram.add_parser(subparsers)
 
     args = parser.parse_args(argv)
     args.func(args)

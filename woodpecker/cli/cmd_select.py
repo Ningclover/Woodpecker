@@ -6,6 +6,7 @@ Optionally writes the Selection to a JSON sidecar.
 
 from __future__ import annotations
 
+import datetime
 import os
 import sys
 
@@ -44,12 +45,18 @@ def run(args) -> None:
     source_cls = SourceRegistry.get("frames")
     frame_data = source_cls().load(args.archive)
 
-    # 2. Ensure output directory exists (always, even if --out is explicit)
-    os.makedirs(args.outdir, exist_ok=True)
+    # 2. Resolve output directory: if user didn't specify --outdir, auto-name
+    #    with today's date to ensure a fresh folder each day.
+    if args.outdir == "woodpecker_data":
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        outdir = f"woodpecker_data_{date_str}"
+    else:
+        outdir = args.outdir
+    os.makedirs(outdir, exist_ok=True)
 
     out_path = args.out
     if out_path is None:
-        out_path = os.path.join(args.outdir,
+        out_path = os.path.join(outdir,
                                 f"{args.prefix}-anode{frame_data.anode_id}.tar.bz2")
     else:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -66,7 +73,7 @@ def run(args) -> None:
         PipelineRunner(["mask_frames"]).run(ctx)
 
         sel_path = args.save_selection or os.path.join(
-            args.outdir, f"selection-anode{frame_data.anode_id}.json"
+            outdir, f"selection-anode{frame_data.anode_id}.json"
         )
         with open(sel_path, "w") as f:
             f.write(selection.to_json())
