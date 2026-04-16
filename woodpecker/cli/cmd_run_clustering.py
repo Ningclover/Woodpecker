@@ -63,8 +63,8 @@ def add_parser(subparsers) -> None:
         help="Directory containing wct-clustering.jsonnet, unzip.pl, zip-upload.sh",
     )
     p.add_argument(
-        "--wct-base", default="/nfs/data/1/xning/wirecell-working",
-        help="WCT_BASE directory (default: /nfs/data/1/xning/wirecell-working)",
+        "--wct-base", default=None,
+        help="WCT_BASE directory (required)",
     )
     p.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"],

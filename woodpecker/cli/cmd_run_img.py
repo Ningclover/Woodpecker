@@ -62,8 +62,8 @@ def add_parser(subparsers) -> None:
              "(default: auto-search for wcp-porting-img/pdvd relative to CWD)",
     )
     p.add_argument(
-        "--wct-base", default="/nfs/data/1/xning/wirecell-working",
-        help="WCT_BASE directory (default: /nfs/data/1/xning/wirecell-working). "
+        "--wct-base", default=None,
+        help="WCT_BASE directory. "
              "Sets WIRECELL_PATH to include toolkit/cfg and "
              "dunereco/dunereco/DUNEWireCell/protodunevd",
     )

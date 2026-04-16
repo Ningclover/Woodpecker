@@ -303,7 +303,7 @@ woodpecker run-img --dry-run
 | `--anode-indices` | auto-detect | JSON list e.g. `'[1,2]'` |
 | `--output-prefix` | `<datadir>/protodune-sp-frames-img` | Output prefix |
 | `--jsonnet` | auto-search | Path to imaging jsonnet |
-| `--wct-base` | `/nfs/data/1/xning/wirecell-working` | WCT_BASE directory |
+| `--wct-base` | *(required)* | WCT_BASE directory |
 | `--log-level` | `debug` | Wire-cell log level |
 | `--dry-run` | false | Print command without executing |
 
@@ -341,7 +341,7 @@ woodpecker run-sim-check --dry-run
 | `--anode-indices` | auto-detect | JSON list e.g. `'[2]'` |
 | `--output-prefix` | `<datadir>/protodune-sp-frames-sim` | Output prefix |
 | `--jsonnet` | auto-search | Path to simulation jsonnet |
-| `--wct-base` | `/nfs/data/1/xning/wirecell-working` | WCT_BASE directory |
+| `--wct-base` | *(required)* | WCT_BASE directory |
 | `--log-level` | `info` | Wire-cell log level |
 | `--dry-run` | false | Print command without executing |
 
