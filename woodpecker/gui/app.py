@@ -11,6 +11,8 @@ from typing import Optional
 import matplotlib
 if not os.environ.get("MPLBACKEND"):
     matplotlib.use("QtAgg")
+if matplotlib.get_backend().lower() == "webagg":
+    matplotlib.rcParams["webagg.open_in_browser"] = False
 import matplotlib.pyplot as plt
 import numpy as np
 
