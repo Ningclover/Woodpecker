@@ -10,11 +10,12 @@ The command is equivalent to:
     --tla-code "tracks_json=$(cat woodpecker_data/tracks-upload.json)" \\
     --tla-str  output_prefix='woodpecker_data/protodune-sp-frames-sim' \\
     --tla-code anode_indices='[N,...]' \\
-    -c wcp-porting-img/pdvd/wct-sim-check-track.jsonnet
+    -c wcp-porting-img/<pdvd|pdhd>/wct-sim-check-track.jsonnet
 
 Usage
 -----
-  woodpecker run-sim-check
+  woodpecker run-sim-check                          # ProtoDUNE-VD (default)
+  woodpecker run-sim-check --detector hd            # ProtoDUNE-HD
   woodpecker run-sim-check --tracks-file woodpecker_data/tracks-upload.json
   woodpecker run-sim-check --anode-indices '[2]'
   woodpecker run-sim-check --dry-run
@@ -56,12 +57,17 @@ def add_parser(subparsers) -> None:
     p.add_argument(
         "--output-prefix", default=None,
         help="Prefix for output tar.bz2 files: <prefix>-anodeN.tar.bz2 "
-             "(default: <datadir>/protodune-sp-frames-sim)",
+             "(default: <datadir>/protodune(hd)?-sp-frames-sim)",
+    )
+    p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help="Detector flavour: 'vd' uses wcp-porting-img/pdvd/, "
+             "'hd' uses wcp-porting-img/pdhd/ (default: vd)",
     )
     p.add_argument(
         "--jsonnet", default=None,
         help="Path to wct-sim-check-track.jsonnet "
-             "(default: auto-search for wcp-porting-img/pdvd relative to CWD)",
+             "(default: auto-search by --detector)",
     )
     p.add_argument(
         "--script-dir", default=None,
@@ -73,6 +79,11 @@ def add_parser(subparsers) -> None:
     )
     p.add_argument(
         "--log-level", default="debug", choices=["debug", "info", "warning", "error"],
+    )
+    p.add_argument(
+        "--elec-gain", default=None, type=float,
+        help="HD only: FE amplifier gain in mV/fC, passed as -V elecGain=<value>. "
+             "Default: 14 (use 7.8 for low-gain data). Ignored for VD.",
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -99,14 +110,18 @@ def _find_tracks_file(datadir: str) -> str | None:
     return candidates[0] if candidates else None
 
 
-def _resolve_jsonnet(script_dir: str | None) -> str | None:
+_DETECTOR_SUBDIR = {"vd": "pdvd", "hd": "pdhd"}
+
+
+def _resolve_jsonnet(script_dir: str | None, detector: str) -> str | None:
+    subdir = _DETECTOR_SUBDIR[detector]
     candidates = []
     if script_dir:
         candidates.append(os.path.join(script_dir, "wct-sim-check-track.jsonnet"))
     cwd = os.path.abspath(".")
     for _ in range(5):
         candidates.append(
-            os.path.join(cwd, "wcp-porting-img", "pdvd", "wct-sim-check-track.jsonnet")
+            os.path.join(cwd, "wcp-porting-img", subdir, "wct-sim-check-track.jsonnet")
         )
         parent = os.path.dirname(cwd)
         if parent == cwd:
@@ -121,14 +136,9 @@ def _resolve_jsonnet(script_dir: str | None) -> str | None:
 def _build_env(wct_base: str | None) -> dict:
     env = os.environ.copy()
     if wct_base and os.path.isdir(wct_base):
-        dunereco_base = os.path.join(wct_base, "dunereco", "dunereco", "DUNEWireCell")
+        # All cfg comes from toolkit/cfg/ — no dunereco overlay.
         extra = os.pathsep.join([
-            # DUNEWireCell must come before toolkit/cfg so that
-            # 'common/tools.jsonnet' resolves to the dunereco version
-            # which defines elec_resps (plural array, needed by sp.jsonnet)
-            dunereco_base,
             os.path.join(wct_base, "toolkit", "cfg"),
-            os.path.join(dunereco_base, "protodunevd"),
             os.path.join(wct_base, "local", "share", "wirecell"),
         ])
         current = env.get("WIRECELL_PATH", "")
@@ -190,12 +200,18 @@ def run(args: argparse.Namespace) -> None:
         anode_list = "[" + ",".join(str(i) for i in ids) + "]"
 
     # Resolve output prefix
-    output_prefix = args.output_prefix or os.path.join(datadir, "protodune-sp-frames-sim")
+    if args.output_prefix:
+        output_prefix = args.output_prefix
+    else:
+        stem = ("protodunehd-sp-frames-sim" if args.detector == "hd"
+                else "protodune-sp-frames-sim")
+        output_prefix = os.path.join(datadir, stem)
 
     # Resolve jsonnet
-    jsonnet = args.jsonnet or _resolve_jsonnet(args.script_dir)
+    jsonnet = args.jsonnet or _resolve_jsonnet(args.script_dir, args.detector)
     if jsonnet is None:
-        print("ERROR: could not find wct-sim-check-track.jsonnet.\n"
+        subdir = _DETECTOR_SUBDIR[args.detector]
+        print(f"ERROR: could not find wcp-porting-img/{subdir}/wct-sim-check-track.jsonnet.\n"
               "Use --jsonnet /path/to/wct-sim-check-track.jsonnet", file=sys.stderr)
         sys.exit(1)
 
@@ -215,6 +231,11 @@ def run(args: argparse.Namespace) -> None:
         "wire-cell",
         "-l", "stdout",
         "-L", args.log_level,
+    ]
+    if args.detector == "hd":
+        elec_gain = args.elec_gain if args.elec_gain is not None else 14
+        cmd += ["-V", f"elecGain={elec_gain}"]
+    cmd += [
         "--tla-code", f"tracks_json={tracks_json}",
         "--tla-str",  f"output_prefix={output_prefix}",
         "--tla-code", f"anode_indices={anode_list}",

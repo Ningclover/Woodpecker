@@ -19,7 +19,9 @@ from woodpecker.cli import (
     cmd_extract,
     cmd_select_parallelogram,
     cmd_compare_waveforms,
+    cmd_extract_track_waveform,
     # wct
+    cmd_run_nfsp,
     cmd_run_img,
     cmd_run_clustering,
     cmd_run_sim_check,
@@ -35,9 +37,9 @@ def main(argv=None) -> None:
         description=(
             "WireCell targeted region selection and debugging tool.\n\n"
             "Commands are grouped into:\n"
-            "  Workflow : select, mask, extract-tracks, select-refine, compare-waveforms\n"
-            "  WCT      : run-img, run-clustering, run-sim-check  (require wire-cell)\n"
-            "  Helpers  : plot-frames, frames-to-root"
+            "  Workflow : select, mask, extract-tracks, select-refine, compare-waveforms, extract-track-waveform\n"
+            "  WCT      : run-nfsp, run-img, run-clustering, run-sim-check  (require wire-cell)\n"
+            "  Helpers  : plot-frames, frames-to-root (Magnify format)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -52,8 +54,10 @@ def main(argv=None) -> None:
     cmd_extract.add_parser(subparsers)
     cmd_select_parallelogram.add_parser(subparsers)
     cmd_compare_waveforms.add_parser(subparsers)
+    cmd_extract_track_waveform.add_parser(subparsers)
 
     # ── WCT commands (require wire-cell) ──────────────────────────────────────
+    cmd_run_nfsp.add_parser(subparsers)
     cmd_run_img.add_parser(subparsers)
     cmd_run_clustering.add_parser(subparsers)
     cmd_run_sim_check.add_parser(subparsers)

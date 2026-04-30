@@ -52,23 +52,26 @@ def add_parser(subparsers) -> None:
         help="Directory containing masked tar.bz2 files (default: ./woodpecker_data/)",
     )
     p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help="Detector type: 'vd' (ProtoDUNE-VD, default) or 'hd' (ProtoDUNE-HD). "
+             "Controls default jsonnet and WIRECELL_PATH.",
+    )
+    p.add_argument(
         "--prefix", default=None,
         help="Override input_prefix (auto-detected from filenames if omitted)",
     )
     p.add_argument(
         "--jsonnet", default=None,
-        help="Path to the imaging jsonnet (default: auto-search relative to --script-dir)",
+        help="Path to the imaging jsonnet (default: auto-search wcp-porting-img/<detector>/)",
     )
     p.add_argument(
         "--script-dir", default=None,
-        help="Directory containing wct-img-all.jsonnet; wire-cell runs from here "
-             "(default: auto-search for wcp-porting-img/pdvd relative to CWD)",
+        help="Directory containing wct-img-all.jsonnet "
+             "(default: auto-search for wcp-porting-img/<detector> relative to CWD)",
     )
     p.add_argument(
         "--wct-base", default=None,
-        help="WCT_BASE directory. "
-             "Sets WIRECELL_PATH to include toolkit/cfg and "
-             "dunereco/dunereco/DUNEWireCell/protodunevd",
+        help="WCT_BASE directory. Sets WIRECELL_PATH to include toolkit/cfg.",
     )
     p.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"],
@@ -78,6 +81,11 @@ def add_parser(subparsers) -> None:
         "--anode-indices", default=None,
         help="Override anode indices as JSON list e.g. '[1,2]' "
              "(default: auto-detect from files in --datadir)",
+    )
+    p.add_argument(
+        "--elec-gain", default=None,
+        help="FE amplifier gain in mV/fC for HD detector (default: 14). "
+             "Use 7.8 for data taken after mid-July 2024.",
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -116,28 +124,22 @@ def _build_env(wct_base: str | None) -> dict:
     env = os.environ.copy()
     if wct_base is None:
         return env
-    extra = os.pathsep.join([
-        os.path.join(wct_base, "toolkit", "cfg"),
-        os.path.join(wct_base, "dunereco", "dunereco",
-                     "DUNEWireCell", "protodunevd"),
-    ])
+    extra = os.path.join(wct_base, "toolkit", "cfg")
     current = env.get("WIRECELL_PATH", "")
     env["WIRECELL_PATH"] = extra + (os.pathsep + current if current else "")
     return env
 
 
-def _resolve_jsonnet(script_dir: str | None) -> str | None:
+def _resolve_jsonnet(script_dir: str | None, detector: str = "vd") -> str | None:
     """Try to locate wct-img-all.jsonnet near the script dir or CWD ancestors."""
+    det_subdir = "pdvd" if detector == "vd" else "pdhd"
     candidates = []
     if script_dir:
         candidates.append(os.path.join(script_dir, "wct-img-all.jsonnet"))
 
-    # Search upward from CWD for the wirecell-working root, then look in
-    # wcp-porting-img/pdvd/ — works whether you run from woodpecker_working/
-    # or the repo root.
     cwd = os.path.abspath(".")
     for _ in range(5):
-        candidates.append(os.path.join(cwd, "wcp-porting-img", "pdvd", "wct-img-all.jsonnet"))
+        candidates.append(os.path.join(cwd, "wcp-porting-img", det_subdir, "wct-img-all.jsonnet"))
         parent = os.path.dirname(cwd)
         if parent == cwd:
             break
@@ -194,19 +196,16 @@ def run(args: argparse.Namespace) -> None:
         anode_ids = sorted(n for _, n, _ in matches)
 
     # Resolve jsonnet path
-    jsonnet = args.jsonnet or _resolve_jsonnet(args.script_dir)
+    jsonnet = args.jsonnet or _resolve_jsonnet(args.script_dir, args.detector)
     if jsonnet is None:
-        print("ERROR: could not find wct-img-all.jsonnet.\n"
+        print(f"ERROR: could not find wct-img-all.jsonnet for detector '{args.detector}'.\n"
               "Use --jsonnet /path/to/wct-img-all.jsonnet", file=sys.stderr)
         sys.exit(1)
 
-    # wire-cell resolves "{input_prefix}-anodeN.tar.bz2" relative to its CWD.
-    # We do NOT change CWD — wire-cell runs in the caller's CWD so that
-    # relative WIRECELL_PATH entries and geometry files resolve correctly.
-    # The datadir and jsonnet are kept as-is (relative or absolute, whatever
-    # the user provided / auto-detected).
-    anode_list = "[" + ",".join(str(i) for i in anode_ids) + "]"
-    rel_prefix = os.path.join(datadir, prefix)   # e.g. woodpecker_data/protodune-sp-frames-part
+    anode_list  = "[" + ",".join(str(i) for i in anode_ids) + "]"
+    abs_datadir = os.path.abspath(datadir)
+    abs_prefix  = os.path.join(abs_datadir, prefix)
+    script_dir  = os.path.dirname(jsonnet)
 
     wct_base = _resolve_wct_base(args.wct_base)
     env      = _build_env(wct_base)
@@ -215,25 +214,30 @@ def run(args: argparse.Namespace) -> None:
         "wire-cell",
         "-l", "stdout",
         "-L", args.log_level,
-        "--tla-str",  f"input_prefix={rel_prefix}",
-        "--tla-str",  f"output_dir={datadir}",
+        "--tla-str",  f"input_prefix={abs_prefix}",
+        "--tla-str",  f"output_dir={abs_datadir}",
         "--tla-code", f"anode_indices={anode_list}",
-        "-c", jsonnet,
     ]
+    if args.detector == "hd":
+        elec_gain = args.elec_gain or "14"
+        cmd += ["-V", f"elecGain={elec_gain}"]
+    cmd += ["-c", os.path.basename(jsonnet)]
 
     print("\n" + "=" * 60)
     print("wire-cell imaging command")
     print("=" * 60)
-    print(f"  input_prefix  : {rel_prefix}")
-    print(f"  output_dir    : {datadir}")
+    print(f"  input_prefix  : {abs_prefix}")
+    print(f"  output_dir    : {abs_datadir}")
     print(f"  anode_indices : {anode_list}")
     print(f"  jsonnet       : {jsonnet}")
+    print(f"  script_dir    : {script_dir}")
     print(f"  wct_base      : {wct_base or '(not found, using current WIRECELL_PATH)'}")
     print(f"  WIRECELL_PATH : {env.get('WIRECELL_PATH', '(not set)')}")
     print(f"  files         :")
     for _, n, f in matches:
         print(f"    anode {n}  →  {f}")
     print()
+    print(f"  (cwd: {script_dir})")
     print("Command:")
     print("  " + " \\\n    ".join(cmd))
     print("=" * 60 + "\n")
@@ -242,7 +246,7 @@ def run(args: argparse.Namespace) -> None:
         print("(dry-run: not executing)")
         return
 
-    result = subprocess.run(cmd, env=env)
+    result = subprocess.run(cmd, env=env, cwd=script_dir)
     if result.returncode != 0:
         sys.exit(result.returncode)
 

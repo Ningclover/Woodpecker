@@ -55,8 +55,13 @@ def add_parser(subparsers) -> None:
              "(default: auto-detect from woodpecker_data/ masked frame files)",
     )
     p.add_argument(
+        "--detector", default="vd", choices=["vd", "hd"],
+        help="Detector type: 'vd' (ProtoDUNE-VD, default) or 'hd' (ProtoDUNE-HD). "
+             "Controls default jsonnet.",
+    )
+    p.add_argument(
         "--jsonnet", default=None,
-        help="Path to wct-clustering.jsonnet (default: auto-search for wcp-porting-img/pdvd)",
+        help="Path to wct-clustering.jsonnet (default: auto-search wcp-porting-img/<detector>/)",
     )
     p.add_argument(
         "--script-dir", default=None,
@@ -64,10 +69,15 @@ def add_parser(subparsers) -> None:
     )
     p.add_argument(
         "--wct-base", default=None,
-        help="WCT_BASE directory (required)",
+        help="WCT_BASE directory. Sets WIRECELL_PATH to include toolkit/cfg.",
     )
     p.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"],
+    )
+    p.add_argument(
+        "--elec-gain", default=None,
+        help="FE amplifier gain in mV/fC for HD detector (default: 14). "
+             "Use 7.8 for data taken after mid-July 2024.",
     )
     p.add_argument(
         "--no-unzip", action="store_true",
@@ -89,21 +99,22 @@ def add_parser(subparsers) -> None:
 def _detect_anode_ids_from_datadir(datadir: str):
     """Read anode IDs from woodpecker_data/ masked frame files — same source as run-img."""
     pattern = os.path.join(datadir, "*.tar.bz2")
-    ids = []
+    ids = set()
     for path in sorted(glob.glob(pattern)):
         m = _FNAME_RE.match(os.path.basename(path))
         if m:
-            ids.append(int(m.group(2)))
+            ids.add(int(m.group(2)))
     return sorted(ids)
 
 
-def _resolve_script_dir(script_dir: str | None) -> str | None:
+def _resolve_script_dir(script_dir: str | None, detector: str = "vd") -> str | None:
+    det_subdir = "pdvd" if detector == "vd" else "pdhd"
     candidates = []
     if script_dir:
         candidates.append(script_dir)
     cwd = os.path.abspath(".")
     for _ in range(5):
-        candidates.append(os.path.join(cwd, "wcp-porting-img", "pdvd"))
+        candidates.append(os.path.join(cwd, "wcp-porting-img", det_subdir))
         parent = os.path.dirname(cwd)
         if parent == cwd:
             break
@@ -117,11 +128,7 @@ def _resolve_script_dir(script_dir: str | None) -> str | None:
 def _build_env(wct_base: str | None) -> dict:
     env = os.environ.copy()
     if wct_base and os.path.isdir(wct_base):
-        extra = os.pathsep.join([
-            os.path.join(wct_base, "toolkit", "cfg"),
-            os.path.join(wct_base, "dunereco", "dunereco",
-                         "DUNEWireCell", "protodunevd"),
-        ])
+        extra = os.path.join(wct_base, "toolkit", "cfg")
         current = env.get("WIRECELL_PATH", "")
         env["WIRECELL_PATH"] = extra + (os.pathsep + current if current else "")
     return env
@@ -142,10 +149,11 @@ def _run_or_print(cmd, dry_run: bool, env: dict, label: str, cwd=None) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> None:
-    script_dir = _resolve_script_dir(args.script_dir)
+    script_dir = _resolve_script_dir(args.script_dir, args.detector)
     if script_dir is None:
-        print("ERROR: could not find wct-clustering.jsonnet.\n"
-              "Use --script-dir /path/to/pdvd", file=sys.stderr)
+        det_subdir = "pdvd" if args.detector == "vd" else "pdhd"
+        print(f"ERROR: could not find wct-clustering.jsonnet for detector '{args.detector}'.\n"
+              f"Use --script-dir /path/to/{det_subdir}", file=sys.stderr)
         sys.exit(1)
 
     jsonnet = args.jsonnet or os.path.join(script_dir, "wct-clustering.jsonnet")
@@ -168,9 +176,10 @@ def run(args: argparse.Namespace) -> None:
     print("\n" + "=" * 60)
     print("wire-cell clustering")
     print("=" * 60)
-    datadir     = args.datadir
-    input_dir   = args.input if args.input is not None else datadir
+    datadir     = os.path.abspath(args.datadir)
+    input_dir   = os.path.abspath(args.input) if args.input is not None else datadir
     output_dir  = datadir   # cluster output and bee zips all go to datadir
+    clus_script_dir = os.path.dirname(os.path.abspath(jsonnet))
     unzip_script  = os.path.abspath(os.path.join(_TOOLS_DIR, "unzip.pl"))
     upload_script = os.path.abspath(os.path.join(_TOOLS_DIR, "zip-upload.sh"))
 
@@ -179,12 +188,13 @@ def run(args: argparse.Namespace) -> None:
     print(f"  output_dir    : {output_dir}  (where mabc-*.zip will be written)")
     print(f"  anode_indices : {anode_list}")
     print(f"  jsonnet       : {jsonnet}")
+    print(f"  script_dir    : {clus_script_dir}")
     print(f"  unzip script  : {unzip_script}")
     print(f"  upload script : {upload_script}")
     print(f"  WIRECELL_PATH : {env.get('WIRECELL_PATH', '(not set)')}")
     print("=" * 60)
 
-    # Step 1 — wire-cell clustering
+    # Step 1 — wire-cell clustering (runs from the jsonnet directory)
     cmd_clus = [
         "wire-cell",
         "-l", "stdout",
@@ -192,9 +202,13 @@ def run(args: argparse.Namespace) -> None:
         "--tla-str",  f"input={input_dir}",
         "--tla-str",  f"output_dir={output_dir}",
         "--tla-code", f"anode_indices={anode_list}",
-        "-c", jsonnet,
     ]
-    _run_or_print(cmd_clus, args.dry_run, env, "wire-cell clustering")
+    if args.detector == "hd":
+        elec_gain = args.elec_gain or "14"
+        cmd_clus += ["-V", f"elecGain={elec_gain}"]
+    cmd_clus += ["-c", os.path.basename(jsonnet)]
+    _run_or_print(cmd_clus, args.dry_run, env, "wire-cell clustering",
+                  cwd=clus_script_dir)
 
     if args.no_unzip:
         if args.dry_run:

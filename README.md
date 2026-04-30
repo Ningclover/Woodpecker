@@ -44,13 +44,17 @@ protodune-sp-frames-anode<N>.tar.bz2   (WireCell FrameFileSink output)
                      selection for data + sim)       ▼
                                           woodpecker compare-waveforms
                                              → aligned mean waveform comparison PNG
+
+   woodpecker extract-track-waveform <sim.tar.bz2>
+        (single sim plane, no data) → peak-aligned mean waveform PNG + NPY
 ```
 
 Helper tools :
 
 ```
 woodpecker plot-frames      → quick U/V/W image of any tar.bz2 frame archive
-woodpecker frames-to-root   → convert tar.bz2 frame archive to ROOT TH2D histograms
+woodpecker frames-to-root   → convert SP frame archive(s) to Magnify ROOT files
+                              under data/ROOT/<det>/<run>_<evt>/ (no wire-cell needed)
 ```
 
 ---
@@ -216,6 +220,38 @@ Each of the 6 subplots has two buttons below it:
 
 ---
 
+### `extract-track-waveform` — 1D peak-aligned mean waveform from one plane
+
+Extracts a single 1D waveform from a sim frame archive whose track is
+parallel to a wire plane and perpendicular to one specific plane's wires
+(the "target plane").  Identifies the channels that carry signal on the
+target plane (peak |ADC| > N×RMS), peak-aligns each row, and averages
+across signal channels only.
+
+```bash
+woodpecker extract-track-waveform sim.tar.bz2
+woodpecker extract-track-waveform sim.tar.bz2 --plane V
+woodpecker extract-track-waveform sim.tar.bz2 --threshold 7 --half-window 300
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `frame_file` | required | Sim frame archive (e.g. `…-anode<N>.tar.bz2`) |
+| `--plane` | parsed from filename (`-anode<N>-<P>-`) | Target plane: `U`, `V`, or `W` |
+| `--detector` | `hd` if filename contains `protodunehd`, else `vd` | Plane-split convention |
+| `--tag` | auto-detect (`raw<N>` / `raw`) | Frame tag |
+| `--threshold` | `5` | Channels with `peak |ADC| > threshold * plane_RMS` are averaged |
+| `--half-window` | `200` | Half-width of output waveform array (ticks); output length = `2*half_window` |
+| `--out` | `<frame_file>.<plane>-waveform.png` | PNG output path; `.npy` written next to it with same stem |
+| `--dpi` | `150` | PNG DPI |
+
+Outputs:
+
+- **PNG** — line plot of the 1D mean waveform vs peak-aligned tick.
+- **NPY** — `float64` array of length `2 * half_window`, peak at index `half_window`.
+
+---
+
 ### `compare-waveforms` — compare data and simulation signal shapes
 
 Loads data and simulation frame archives, extracts waveforms from the
@@ -291,6 +327,47 @@ These commands build and execute `wire-cell` command lines.  They require a
 working WireCell installation (`wire-cell` on PATH) and appropriate jsonnet
 configuration files.
 
+### `run-nfsp` — run WireCell noise-filtering + signal processing
+
+Reads per-anode `protodune-orig-frames-anode*.tar.bz2` archives (produced by
+the LArSoft stage) and runs the WireCell NF→SP pipeline.  Outputs:
+
+- `protodune-raw-frames-anode{N}.tar.bz2` — NF output (raw tag)
+- `protodune-sp-frames-anode{N}.tar.bz2`  — SP output (gauss + wiener tags)
+
+The output files are what `woodpecker select` and `woodpecker plot-frames` consume.
+
+```bash
+# Auto-detect all anodes from the input directory:
+woodpecker run-nfsp --input data/vd/run039324/evt1/
+
+# Specific anodes only:
+woodpecker run-nfsp --input data/vd/run039324/evt1/ --anode-indices '[0,1,2,3]'
+
+# Write output to a different directory:
+woodpecker run-nfsp --input data/vd/run039324/evt1/ --output woodpecker_data/
+
+# Disable resampler (bottom anodes n<4 are resampled by default):
+woodpecker run-nfsp --input data/vd/run039324/evt1/ --no-resampler
+
+# Dry-run: print the wire-cell command without executing:
+woodpecker run-nfsp --input data/vd/run039324/evt1/ --dry-run
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input` | required | Directory containing `protodune-orig-frames-anode*.tar.bz2` |
+| `--output` | same as `--input` | Directory to write output frame archives |
+| `--anode-indices` | auto-detect | JSON list e.g. `'[0,1,2,3]'` |
+| `--jsonnet` | auto-search | Path to `wct-nf-sp.jsonnet` (looks in `wcp-porting-img/pdvd/`) |
+| `--wct-base` | — | WCT_BASE dir; sets WIRECELL_PATH to include `toolkit/cfg` and protodunevd cfg |
+| `--log-level` | `info` | wire-cell `-L` log level |
+| `--no-resampler` | off | Disable resampler for bottom anodes (n < 4) |
+| `--sigoutform` | `dense` | SP output format: `dense` or `sparse` |
+| `--dry-run` | off | Print command without executing |
+
+---
+
 ### `run-img` — run WireCell imaging on masked frames
 
 ```bash
@@ -343,7 +420,8 @@ Output: `woodpecker_data/upload.zip` (bee viewer) and
 ### `run-sim-check` — simulate longest extracted track
 
 ```bash
-woodpecker run-sim-check
+woodpecker run-sim-check                              # ProtoDUNE-VD (default)
+woodpecker run-sim-check --detector hd                # ProtoDUNE-HD
 woodpecker run-sim-check --tracks-file woodpecker_data/tracks-upload.json
 woodpecker run-sim-check --anode-indices '[2]'
 woodpecker run-sim-check --dry-run
@@ -351,11 +429,12 @@ woodpecker run-sim-check --dry-run
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--detector` | `vd` | `vd` → `wcp-porting-img/pdvd/`; `hd` → `wcp-porting-img/pdhd/` |
 | `--tracks-file` | auto-detect `tracks-*.json` | Track JSON from `extract-tracks` |
 | `--datadir` | `woodpecker_data` | Used for anode auto-detection |
 | `--anode-indices` | auto-detect | JSON list e.g. `'[2]'` |
-| `--output-prefix` | `<datadir>/protodune-sp-frames-sim` | Output prefix |
-| `--jsonnet` | auto-search | Path to simulation jsonnet |
+| `--output-prefix` | `<datadir>/protodune(hd)?-sp-frames-sim` | Output prefix |
+| `--jsonnet` | auto-search by detector | Path to simulation jsonnet |
 | `--wct-base` | *(required)* | WCT_BASE directory |
 | `--log-level` | `info` | Wire-cell log level |
 | `--dry-run` | false | Print command without executing |
@@ -405,49 +484,104 @@ shows the count: `[N bad ch]`.  Archives without this array are unaffected.
 
 ---
 
-### `frames-to-root` — convert tar.bz2 frame archive to ROOT TH2D histograms
+### `frames-to-root` — convert SP frame archive(s) to Magnify-format ROOT files
 
-Reads a WireCell `FrameFileSink` tar.bz2 archive and writes a ROOT file
-containing one `TH2D` per tag per wire plane.  Planes are split by channel-number
-gaps (VD) or fixed offsets (HD).
+Reads WireCell `FrameFileSink` tar.bz2 archives produced by the SP stage and
+writes one Magnify-compatible ROOT file **per anode**, without invoking
+`wire-cell`.  All data is read directly from the npy arrays inside the archives.
+
+#### Output layout
+
+Default layout matches the convention used by `pdvd/work/` and the Magnify
+viewer's directory scanner (parent dir name must match `<digits>_<digits>`),
+with HD and VD outputs separated under their own subdirectories:
+
+```
+<data>/ROOT/<DETECTOR>/<RUN_PADDED>_<EVT_IDX>/magnify-run<RUN_PADDED>-evt<EVT_IDX>-anode<N>.root
+```
+
+- `<DETECTOR>` — `hd` or `vd`, taken from `--detector`.
+- `<RUN_PADDED>` — `--run` zero-padded to 6 digits (e.g. `27409` → `027409`).
+- `<EVT_IDX>` — the **local event index**, parsed from the SP archive's
+  parent directory name (`evt_12/` → `12`).  This is the same number used
+  by `run_sp_to_magnify_evt.sh`.  If the parent dir is not `evt_<N>`, falls
+  back to the art event number read from the archive, then to `0`.
+- `<data>` — the grandparent of the SP archive's run directory, e.g. for
+  `data/hd/run027409/evt_12/foo.tar.bz2` the base resolves to `data/ROOT/hd/`.
+- The art event number (e.g. `40944`) is still recorded in the `Trun.eventNo`
+  branch inside the file even when it differs from `<EVT_IDX>`.
+
+Override the layout with `--root-base` (changes only the base, keeps the
+`<run>_<evt>/` subdir) or `--outdir` (writes files directly into the given
+directory, no subdir).
 
 ```bash
-# Convert all tags (raw, gauss, …) found in the archive:
-woodpecker frames-to-root data/run040475/protodune-sp-frames-anode0.tar.bz2
+# Default layout — writes data/ROOT/hd/027409_12/magnify-run027409-evt12-anode0.root
+woodpecker frames-to-root data/hd/run027409/evt_12/protodunehd-sp-frames-anode0.tar.bz2 \
+    --detector hd --run 27409
 
-# Convert a specific tag only:
-woodpecker frames-to-root data.tar.bz2 --tag gauss
+# All four HD anodes in one command (one ROOT file per anode):
+woodpecker frames-to-root data/hd/run027409/evt_12/protodunehd-sp-frames-anode{0,1,2,3}.tar.bz2 \
+    --detector hd --run 27409
 
-# Convert multiple specific tags:
-woodpecker frames-to-root data.tar.bz2 --tag raw --tag gauss
+# Include raw and orig frames:
+woodpecker frames-to-root data/hd/run027409/evt_12/protodunehd-sp-frames-anode{0,1,2,3}.tar.bz2 \
+    --raw  data/hd/run027409/evt_12/protodunehd-sp-frames-raw-anode{0,1,2,3}.tar.bz2 \
+    --orig data/hd/run027409/evt_12/protodunehd-orig-frames-anode{0,1,2,3}.tar.bz2 \
+    --detector hd --run 27409 --subrun 0
 
-# Specify output path:
-woodpecker frames-to-root data.tar.bz2 --out frames.root
+# Pin the ROOT base to a custom location (still creates 027409_12/ inside it):
+woodpecker frames-to-root data/hd/run027409/evt_12/protodunehd-sp-frames-anode0.tar.bz2 \
+    --detector hd --run 27409 --root-base /work/my_root
 
-# ProtoDUNE-HD data:
-woodpecker frames-to-root data.tar.bz2 --detector hd
+# Bypass the canonical layout entirely — drop files directly into a flat dir:
+woodpecker frames-to-root data/hd/run027409/evt_12/protodunehd-sp-frames-anode0.tar.bz2 \
+    --detector hd --run 27409 --outdir /tmp/scratch/
+
+# VD detector (plane boundaries auto-detected from channel gaps):
+woodpecker frames-to-root data/vd/run039324/evt_0/protodune-sp-frames-anode0.tar.bz2 --run 39324
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `frame_file` | required | Path to `*-anode<N>.tar.bz2` |
-| `--tag TAG` | all tags found | Frame tag(s) to convert; may be repeated |
-| `--out` | `<frame_file>.root` (same directory) | Output ROOT file path |
-| `--detector` | `vd` | `vd`: split planes on channel gaps (ProtoDUNE-VD); `hd`: fixed split at offsets 800/1600 (ProtoDUNE-HD) |
+| `SP_ARCHIVE ...` | required | SP frame archive(s): `protodune(hd)-sp-frames-anode<N>.tar.bz2` |
+| `--raw ARCHIVE ...` | — | Raw frame archive(s); adds `hu/hv/hw_raw<N>` histograms |
+| `--orig ARCHIVE ...` | — | Orig (pre-NF) frame archive(s); adds `hu/hv/hw_orig<N>` histograms |
+| `--root-base DIR` | `<data>/ROOT/<detector>` | Base dir; output goes into `<root-base>/<run>_<evt>/`. Ignored if `--outdir` is given. |
+| `--outdir DIR` | — | Bypass the `<run>_<evt>/` subdir layout and write files directly into this dir |
+| `--detector` | `vd` | `vd`: split planes on channel gaps; `hd`: fixed split at channels 800/1600 |
+| `--run` | `0` | Run number written into `Trun` tree (also used in filenames, zero-padded to 6 digits) |
+| `--subrun` | `0` | Sub-run number written into `Trun` tree |
+| `--event` | auto | Force the evt token in the output path/filename (default: parse `evt_<N>` from parent dir, else art event number from archive) |
 
-#### Output histogram naming
+#### Output ROOT file contents
 
-For each tag and each plane a `TH2D` is created named `<tag>_<plane>`:
+Each output file contains all objects expected by the Magnify viewer:
 
-| Example tag | Histograms written |
-|-------------|-------------------|
-| `raw4` | `raw4_U`, `raw4_V`, `raw4_W` |
-| `gauss` | `gauss_U`, `gauss_V`, `gauss_W` |
+| Object | Type | Description |
+|--------|------|-------------|
+| `hu_gauss<N>`, `hv_gauss<N>`, `hw_gauss<N>` | `TH2F` | Gauss SP waveforms per plane |
+| `hu_wiener<N>`, `hv_wiener<N>`, `hw_wiener<N>` | `TH2F` | Wiener SP waveforms per plane |
+| `hu_threshold<N>`, `hv_threshold<N>`, `hw_threshold<N>` | `TH1F` | Per-channel SP thresholds |
+| `hu_raw<N>`, `hv_raw<N>`, `hw_raw<N>` | `TH2F` | Raw waveforms (if `--raw` given) |
+| `hu_orig<N>`, `hv_orig<N>`, `hw_orig<N>` | `TH2F` | Pre-NF waveforms (if `--orig` given) |
+| `T_bad<N>` | `TTree` | Bad channel mask: `chid/I`, `plane/I`, `start_time/I`, `end_time/I` |
+| `Trun` | `TTree` | Run metadata: `runNo/I`, `subRunNo/I`, `eventNo/I`, `anodeNo/I`, `total_time_bin/I` |
 
-Histogram axes:
-- **x** — channel number (one bin per channel)
-- **y** — absolute tick number (from `tickinfo` start tick)
-- **z** — ADC value (or signal amplitude)
+Histogram axes (all `TH2F`):
+- **x** — channel number (one bin per channel, channel-centred)
+- **y** — absolute tick number (from `tickinfo` start tick in the archive)
+- **z** — ADC / signal amplitude (`float32`)
+
+Sources inside the tar.bz2 used for each output object:
+
+| Output | npy key(s) read |
+|--------|----------------|
+| `h[uvw]_gauss<N>` | `frame_gauss<N>_*.npy`, `channels_gauss<N>_*.npy`, `tickinfo_gauss<N>_*.npy` |
+| `h[uvw]_wiener<N>` | `frame_wiener<N>_*.npy`, `channels_wiener<N>_*.npy`, `tickinfo_wiener<N>_*.npy` |
+| `h[uvw]_threshold<N>` | `summary_wiener<N>_*.npy` (first `nch` entries), `channels_wiener<N>_*.npy` |
+| `T_bad<N>` | `chanmask_bad_*.npy` (shape `N×3`: `[chid, start_time, end_time]`) |
+| `Trun` | `--run`, `--subrun`, `--event` arguments |
 
 Requires PyROOT.  Make sure `PYTHONPATH` and `LD_LIBRARY_PATH` include the
 ROOT library directory (set in `.envrc` via `path_add PYTHONPATH $PWD/local/lib/root`).
@@ -490,13 +624,14 @@ woodpecker/
     ├── cmd_compare_waveforms.py    # `compare-waveforms` — waveform comparison
     │
     │   ── WCT commands (require wire-cell) ───────────────────────────────────
+    ├── cmd_run_nfsp.py             # `run-nfsp`        — WireCell NF+SP pipeline
     ├── cmd_run_img.py              # `run-img`         — WireCell imaging
     ├── cmd_run_clustering.py       # `run-clustering`  — WireCell clustering
     ├── cmd_run_sim_check.py        # `run-sim-check`   — track simulation
     │
     │   ── Helper tools ───────────────────────────────────────────────────────
     ├── cmd_plot_frames.py          # `plot-frames`     — U/V/W PNG from any archive
-    └── cmd_frames_to_root.py       # `frames-to-root`  — tar.bz2 → ROOT TH2D
+    └── cmd_frames_to_root.py       # `frames-to-root`  — SP tar.bz2 → Magnify ROOT (no wire-cell)
 ```
 
 ### How the plugin system works
