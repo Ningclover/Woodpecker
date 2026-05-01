@@ -390,10 +390,17 @@ def run(args: argparse.Namespace) -> None:
             if args.root_base:
                 base = args.root_base
             else:
-                # Default: 'ROOT/<detector>' next to the run-dir's parent
-                # e.g. .../data/hd/run027425/evt_12/foo.tar.bz2 -> .../data/ROOT/hd
-                run_parent = os.path.dirname(os.path.dirname(os.path.abspath(sp_path)))
-                base = os.path.join(os.path.dirname(run_parent), "ROOT", args.detector)
+                # Default: '<data>/ROOT/<detector>' where <data> is two levels above
+                # the run dir (i.e. parent of the detector dir).
+                # e.g. .../data/hd/run027425/evt_12/foo.tar.bz2
+                #      sp_path → evt_12/foo.tar.bz2
+                #      dirname×1 = evt_dir, ×2 = run_dir, ×3 = det_dir, ×4 = data_dir
+                #      → .../data/ROOT/hd
+                evt_dir = os.path.dirname(os.path.abspath(sp_path))
+                run_dir = os.path.dirname(evt_dir)
+                det_dir = os.path.dirname(run_dir)
+                data_dir = os.path.dirname(det_dir)
+                base = os.path.join(data_dir, "ROOT", args.detector)
             out_dir = os.path.join(base, f"{run_padded}_{evt_token}")
         os.makedirs(out_dir, exist_ok=True)
         out_name = f"magnify-run{run_padded}-evt{evt_token}-anode{anode_id}.root"

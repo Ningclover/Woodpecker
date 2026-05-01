@@ -3,6 +3,12 @@
 Draw U, V, W wire plane views from a FrameFileSink tar.bz2 archive.
 Works with any tag (gauss, wiener, raw, orig, ...).
 
+Bad channels in chanmask_bad_* are overlaid:
+  - Full-waveform bad (t0=0, t1=nticks-1) → blue vertical line.
+  - Time-localised bad (e.g. PDHDFEMBNoiseSub femb_noise tag merged into "bad")
+    → red segment spanning [t0, t1] only. With --tick-range the segment is
+    clipped to the visible window and dropped if it falls outside.
+
 Usage
 -----
   woodpecker plot-frames woodpecker_data/protodune-sp-frames-sim-anode2.tar.bz2
@@ -164,12 +170,28 @@ def run(args: argparse.Namespace) -> None:
     channels = raw_data[ch_key]
     tickinfo = raw_data[ti_key] if ti_key else np.array([0, frame.shape[1], 0.5])
 
-    # Bad channel mask: shape (N, 3) → columns [channel, tick_start, tick_end]
-    bad_channels: set[int] = set()
+    # Bad channel mask: shape (N, 3) → columns [channel, tick_start, tick_end].
+    # Full-waveform entries (t1 >= nticks-1 AND t0 == 0) are typically chndb bad
+    # channels; partial-range entries flag time-localised noise tags (e.g.
+    # PDHDFEMBNoiseSub femb_noise → bad).
+    bad_full: set[int] = set()
+    bad_ranges: list[tuple[int, int, int]] = []  # (channel, t0, t1) for partials
     if bad_key is not None:
         bad_mask = raw_data[bad_key]
-        bad_channels = set(int(r[0]) for r in bad_mask)
-        print(f"  Bad channels ({len(bad_channels)}): {sorted(bad_channels)}")
+        full_nticks = frame.shape[1]
+        for r in bad_mask:
+            ch, t0, t1 = int(r[0]), int(r[1]), int(r[2])
+            if t0 <= 0 and t1 >= full_nticks - 1:
+                bad_full.add(ch)
+            else:
+                bad_ranges.append((ch, t0, t1))
+        print(f"  Bad channels: {len(bad_full)} full-waveform, "
+              f"{len(bad_ranges)} time-localised")
+        if bad_full:
+            print(f"    full: {sorted(bad_full)}")
+        if bad_ranges:
+            preview = bad_ranges[:6] + (["..."] if len(bad_ranges) > 6 else [])
+            print(f"    localised (first 6): {preview}")
 
     start_tick = int(tickinfo[0])
     nticks = frame.shape[1]
@@ -245,11 +267,34 @@ def run(args: argparse.Namespace) -> None:
             cmap=cmap,
             extent=[pch[0], pch[-1], ticks[0], ticks[-1]],
         )
-        # Overlay bad channels as vertical lines
-        plane_bad = [ch for ch in bad_channels if pch[0] <= ch <= pch[-1]]
-        for bch in plane_bad:
+        # Overlay bad channels.
+        #   Full-waveform bad → blue vertical line spanning the full plot.
+        #   Time-localised bad → red segment spanning [t0, t1] only.
+        # Both are clipped to the visible tick window when --tick-range is set.
+        plane_full = [ch for ch in bad_full if pch[0] <= ch <= pch[-1]]
+        for bch in plane_full:
             ax.axvline(x=bch, color="blue", linewidth=0.6, alpha=0.8)
-        bad_label = f"  [{len(plane_bad)} bad ch]" if plane_bad else ""
+
+        view_t0, view_t1 = ticks[0], ticks[-1]
+        plane_loc: list[tuple[int, int, int]] = []
+        for ch, t0, t1 in bad_ranges:
+            if not (pch[0] <= ch <= pch[-1]):
+                continue
+            # Clip the localised range to the current view window
+            seg_t0 = max(t0, view_t0)
+            seg_t1 = min(t1, view_t1)
+            if seg_t1 < seg_t0:
+                continue  # outside the visible tick window
+            plane_loc.append((ch, seg_t0, seg_t1))
+            ax.plot([ch, ch], [seg_t0, seg_t1],
+                    color="red", linewidth=1.0, alpha=0.9)
+
+        parts = []
+        if plane_full:
+            parts.append(f"{len(plane_full)} full")
+        if plane_loc:
+            parts.append(f"{len(plane_loc)} localised")
+        bad_label = f"  [{', '.join(parts)} bad]" if parts else ""
         ax.set_title(f"Plane {label}  (ch {pch[0]}–{pch[-1]},  {pframe.shape[0]} wires){bad_label}")
         ax.set_xlabel("Channel")
         ax.set_ylabel("Tick")
