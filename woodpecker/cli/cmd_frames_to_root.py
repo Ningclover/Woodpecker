@@ -16,8 +16,17 @@ Each file contains:
   TH2F  hu_raw<N>, hv_raw<N>, hw_raw<N>           — raw waveforms (if --raw given)
   TH2F  hu_orig<N>, hv_orig<N>, hw_orig<N>        — pre-NF waveforms (if --orig given)
   TH1F  hu_threshold<N>, hv_threshold<N>, hw_threshold<N> — per-channel SP thresholds
-  TTree T_bad<N>                                   — bad channel mask
+  TTree T_bad<N>                                   — bad channel mask (always written)
+  TTree T_noisy<N>, T_chirp<N>, ...               — additional NF masks (auto or --chanmask)
+  TTree T_geo<N>                                   — per-channel wire lengths (if --wires given)
   TTree Trun                                       — run/subrun/event metadata
+
+Channel mask TTrees
+-------------------
+By default all chanmask_* tags found in the SP and raw archives are written as
+separate TTrees (T_bad<N>, T_noisy<N>, T_chirp<N>, etc.).  Use --chanmask to
+restrict which tags are written.  T_bad<N> is always included when present
+because Magnify reads it on startup.
 
 Usage
 -----
@@ -26,7 +35,10 @@ Usage
   woodpecker frames-to-root protodunehd-sp-frames-anode0.tar.bz2 \\
       --raw  protodunehd-sp-frames-raw-anode0.tar.bz2 \\
       --orig protodunehd-orig-frames-anode0.tar.bz2 \\
+      --wires /path/to/protodunevd-wires-larsoft-v3.json.bz2 \\
       --detector hd --run 27409 --subrun 0
+  # Write only bad+noisy masks explicitly:
+  woodpecker frames-to-root ... --chanmask bad noisy
   # Override output directory:
   woodpecker frames-to-root ... --outdir /some/work/dir/
 """
@@ -39,6 +51,8 @@ import os
 import re
 import sys
 import tarfile
+
+import math
 
 import numpy as np
 
@@ -80,10 +94,24 @@ def add_parser(subparsers) -> None:
             "'hd': fixed boundaries at channels 800/1600 (ProtoDUNE-HD)."
         ),
     )
+    p.add_argument(
+        "--wires", default=None, metavar="WIRES_JSON",
+        help="WireCell wire-geometry JSON or JSON.bz2 file "
+             "(e.g. protodunevd-wires-larsoft-v3.json.bz2). "
+             "When provided, writes T_geo<N> TTree with per-channel wire lengths "
+             "so Magnify can display the wire-length plot.",
+    )
     p.add_argument("--run",    type=int, default=0,    help="Run number for Trun tree (default: 0).")
     p.add_argument("--subrun", type=int, default=0,    help="Sub-run number for Trun tree (default: 0).")
     p.add_argument("--event",  type=int, default=None,
                    help="Event number for Trun tree (default: auto-read from archive filename).")
+    p.add_argument(
+        "--chanmask", nargs="+", default=None, metavar="TAG",
+        help="Channel-mask tag name(s) to write as separate TTrees T_<tag><N>. "
+             "Each TAG is searched as 'chanmask_<TAG>_*' in the SP and raw archives. "
+             "Default: write all chanmask_* tags found (always includes 'bad' if present). "
+             "Example: --chanmask bad noisy chirp",
+    )
     p.set_defaults(func=run)
 
 
@@ -174,6 +202,84 @@ def _write_th1f(tfile, name: str, channels: np.ndarray, values: np.ndarray) -> N
     print(f"      → TH1F '{name}' ({len(channels)} ch)")
 
 
+def _load_wire_lengths(wires_path: str) -> dict:
+    """Parse a WireCell wire-geometry JSON(.bz2) and return
+    {anode_ident: {channel: total_wire_length_cm}}.
+
+    Wire coordinates are in mm (WireCell internal units); divide by 10 for cm,
+    matching what MagnifySink writes (len / units::cm, units::cm == 10).
+    """
+    import bz2, json
+
+    if wires_path.endswith(".bz2"):
+        with bz2.open(wires_path, "rt") as fh:
+            data = json.load(fh)
+    else:
+        with open(wires_path) as fh:
+            data = json.load(fh)
+
+    store  = data["Store"]
+    anodes = store["anodes"]
+    faces  = store["faces"]
+    planes = store["planes"]
+    wires  = store["wires"]
+    points = store["points"]
+
+    result = {}
+    for a_obj in anodes:
+        a = a_obj["Anode"]
+        anode_ident = a["ident"]
+        ch_len: dict[int, float] = {}
+        for fi in a["faces"]:
+            f = faces[fi]["Face"]
+            for pi in f["planes"]:
+                p = planes[pi]["Plane"]
+                for wi in p["wires"]:
+                    w = wires[wi]["Wire"]
+                    ch = w["channel"]
+                    tp = points[w["tail"]]["Point"]
+                    hp = points[w["head"]]["Point"]
+                    dx = hp["x"] - tp["x"]
+                    dy = hp["y"] - tp["y"]
+                    dz = hp["z"] - tp["z"]
+                    seg_len_mm = math.sqrt(dx*dx + dy*dy + dz*dz)
+                    ch_len[ch] = ch_len.get(ch, 0.0) + seg_len_mm
+        # Convert mm → cm
+        result[anode_ident] = {ch: l / 10.0 for ch, l in ch_len.items()}
+
+    return result
+
+
+def _write_tgeo(tfile, name: str, ch_len: dict) -> None:
+    """Write T_geo<N> TTree with (chid/I, plane/I, nwires/I, length/D) branches.
+
+    ch_len: {channel_id: wire_length_cm}
+    plane and nwires are left at 0 (not available without full anode object);
+    Magnify only uses chid and length.
+    """
+    import ROOT
+    tree = ROOT.TTree(name, name)
+    tree.SetDirectory(tfile)
+
+    chid_buf   = np.zeros(1, dtype=np.int32)
+    plane_buf  = np.zeros(1, dtype=np.int32)
+    nwires_buf = np.zeros(1, dtype=np.int32)
+    length_buf = np.zeros(1, dtype=np.float64)
+
+    tree.Branch("chid",   chid_buf,   "chid/I")
+    tree.Branch("plane",  plane_buf,  "plane/I")
+    tree.Branch("nwires", nwires_buf, "nwires/I")
+    tree.Branch("length", length_buf, "length/D")
+
+    for ch in sorted(ch_len.keys()):
+        chid_buf[0]   = ch
+        length_buf[0] = ch_len[ch]
+        tree.Fill()
+
+    tree.Write()
+    print(f"      → TTree '{name}' ({len(ch_len)} entries)")
+
+
 def _plane_of_hd(chid: int) -> int:
     if chid < 800:
         return 0
@@ -258,9 +364,27 @@ def _write_trun(tfile, run: int, subrun: int, event: int, anode: int) -> None:
     print(f"      → TTree 'Trun' (run={run} subrun={subrun} event={event} anode={anode})")
 
 
+def _find_chanmask_tags(data_sources: list[dict]) -> list[str]:
+    """Return sorted list of unique chanmask tag names found across all data sources."""
+    tags = set()
+    pat = re.compile(r"^chanmask_(.+)_\d+$")
+    for data in data_sources:
+        for k in data:
+            m = pat.match(k)
+            if m:
+                tags.add(m.group(1))
+    return sorted(tags)
+
+
 def _process_sp(tfile, data: dict, anode_id: int, boundaries: list | None,
-                plane_labels: list) -> None:
-    """Write gauss/wiener TH2F, threshold TH1F, and T_bad TTree for one anode."""
+                plane_labels: list, chanmask_tags: list[str] | None = None,
+                raw_data: dict | None = None) -> None:
+    """Write gauss/wiener TH2F, threshold TH1F, and one T_<tag><N> TTree per chanmask tag.
+
+    chanmask_tags: explicit list of mask tag names to write (e.g. ['bad', 'noisy']).
+                  None means auto-detect all chanmask_* tags in the archives.
+    raw_data: optional dict from the raw archive searched alongside the SP archive.
+    """
     for tag_base in [f"gauss{anode_id}", f"wiener{anode_id}"]:
         frame_key = next((k for k in data if re.match(rf"^frame_{re.escape(tag_base)}_\d+$", k)), None)
         ch_key    = next((k for k in data if re.match(rf"^channels_{re.escape(tag_base)}_\d+$", k)), None)
@@ -298,18 +422,37 @@ def _process_sp(tfile, data: dict, anode_id: int, boundaries: list | None,
         for pi, (tv, tc) in enumerate(tplanes[:3]):
             _write_th1f(tfile, f"h{plane_labels[pi]}_{thresh_tag}", tc, tv[:, 0])
 
-    # T_bad TTree
-    bad_key = next((k for k in data if re.match(r"^chanmask_bad_\d+$", k)), None)
-    ch_key  = next((k for k in data if re.match(rf"^channels_{re.escape(wiener_tag)}_\d+$", k)), None)
+    # Channel mask TTrees — one T_<tag><N> per requested (or auto-detected) tag
+    ch_key = next((k for k in data if re.match(rf"^channels_{re.escape(wiener_tag)}_\d+$", k)), None)
     all_channels = data[ch_key] if ch_key else np.array([], dtype=np.int32)
-    chanmask     = data[bad_key] if bad_key else np.zeros((0, 3), dtype=np.int32)
-    _write_tbad(tfile, f"T_bad{anode_id}", chanmask, boundaries, all_channels)
+
+    data_sources = [data] + ([raw_data] if raw_data else [])
+    tags_to_write = chanmask_tags if chanmask_tags is not None else _find_chanmask_tags(data_sources)
+    # Always ensure "bad" is written (Magnify reads T_bad<N>); add if absent
+    if "bad" not in tags_to_write and any(
+        re.match(r"^chanmask_bad_\d+$", k) for src in data_sources for k in src
+    ):
+        tags_to_write = ["bad"] + [t for t in tags_to_write if t != "bad"]
+
+    for tag in tags_to_write:
+        pat = re.compile(rf"^chanmask_{re.escape(tag)}_\d+$")
+        mask_arr = None
+        for src in data_sources:
+            key = next((k for k in src if pat.match(k)), None)
+            if key is not None:
+                mask_arr = src[key]
+                break
+        if mask_arr is None:
+            print(f"  WARNING: chanmask tag '{tag}' not found in any archive — skipping T_{tag}{anode_id}")
+            continue
+        tree_name = f"T_{tag}{anode_id}"
+        _write_tbad(tfile, tree_name, mask_arr, boundaries, all_channels)
 
 
-def _process_extra(tfile, path: str, out_tag_prefix: str, boundaries: list | None,
+def _process_extra(tfile, path_or_data, out_tag_prefix: str, boundaries: list | None,
                    plane_labels: list) -> None:
     """Write TH2F histograms for raw or orig archives (all tags found, renamed to out_tag_prefix)."""
-    data = _load_archive(path)
+    data = path_or_data if isinstance(path_or_data, dict) else _load_archive(path_or_data)
     tags_found = []
     for k in data:
         m = re.match(r"^frame_(.+)_\d+$", k)
@@ -357,6 +500,12 @@ def run(args: argparse.Namespace) -> None:
 
     boundaries   = [800, 1600] if args.detector == "hd" else None
     plane_labels = ["u", "v", "w"]
+
+    wire_lengths = {}  # {anode_ident: {channel: length_cm}}
+    if args.wires:
+        print(f"Loading wire geometry from {args.wires} ...")
+        wire_lengths = _load_wire_lengths(args.wires)
+        print(f"  Loaded geometry for {len(wire_lengths)} anodes.")
 
     for sp_path in sorted(sp_files):
         anode_id = _anode_id_from_filename(sp_path)
@@ -412,12 +561,21 @@ def run(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         _write_trun(tfile, args.run, args.subrun, event_no, anode_id)
-        _process_sp(tfile, sp_data, anode_id, boundaries, plane_labels)
 
         raw_path = next((f for f in raw_files if _anode_id_from_filename(f) == anode_id), None)
+        raw_data = _load_archive(raw_path) if raw_path else None
+
+        _process_sp(tfile, sp_data, anode_id, boundaries, plane_labels,
+                    chanmask_tags=args.chanmask, raw_data=raw_data)
+
+        if anode_id in wire_lengths:
+            _write_tgeo(tfile, f"T_geo{anode_id}", wire_lengths[anode_id])
+        elif wire_lengths:
+            print(f"  WARNING: anode {anode_id} not found in wire geometry file — T_geo not written")
+
         if raw_path:
             print(f"  Raw: {raw_path}")
-            _process_extra(tfile, raw_path, f"raw{anode_id}", boundaries, plane_labels)
+            _process_extra(tfile, raw_data, f"raw{anode_id}", boundaries, plane_labels)
 
         orig_path = next((f for f in orig_files if _anode_id_from_filename(f) == anode_id), None)
         if orig_path:

@@ -327,6 +327,21 @@ These commands build and execute `wire-cell` command lines.  They require a
 working WireCell installation (`wire-cell` on PATH) and appropriate jsonnet
 configuration files.
 
+### `run-nf` — run WireCell noise-filtering only
+
+Same input and output layout as `run-nfsp`, but stops after noise filtering
+(no signal processing). Writes only the NF (raw) frame archives. Each NF
+channel-mask tag (`chirp`, `noisy`, and `femb_noise` on HD) is kept under its
+own name by default; use `--maskmap` to rename or merge them.
+
+```bash
+woodpecker run-nf --input data/vd/run039324/evt1/
+woodpecker run-nf --input data/hd/run027409/evt_1/ --detector hd
+# merge every NF mask into "bad" (the old run-nfsp behaviour):
+woodpecker run-nf --input data/hd/run027409/evt_1/ --detector hd \
+    --maskmap '{chirp:"bad",noisy:"bad",femb_noise:"bad"}'
+```
+
 ### `run-nfsp` — run WireCell noise-filtering + signal processing
 
 Reads per-anode `protodune-orig-frames-anode*.tar.bz2` archives (produced by
@@ -624,6 +639,7 @@ woodpecker/
     ├── cmd_compare_waveforms.py    # `compare-waveforms` — waveform comparison
     │
     │   ── WCT commands (require wire-cell) ───────────────────────────────────
+    ├── cmd_run_nf.py               # `run-nf`          — WireCell NF-only pipeline
     ├── cmd_run_nfsp.py             # `run-nfsp`        — WireCell NF+SP pipeline
     ├── cmd_run_img.py              # `run-img`         — WireCell imaging
     ├── cmd_run_clustering.py       # `run-clustering`  — WireCell clustering

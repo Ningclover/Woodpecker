@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # Convert ms-active and ms-masked cluster tarballs to bee format.
-# ms-active blobs go into data/0/, ms-masked blobs go into data/1/.
+# Both go into data/0/ as 0-apa<N>-active.json / 0-apa<N>-masked.json, i.e. ONE
+# bee event in which "active" and "masked" appear as two selectable algorithms.
+# (An earlier version of this comment claimed masked went to data/1/; it never
+# did.)
 #
 # Accepts any number of active and masked files (not limited to 8 anodes).
 # The anode index is parsed from the filename (clusters-apa-anode<N>-ms-*.tar.gz).
@@ -45,12 +48,30 @@ def _anode_idx(filepath):
 
 
 def bee_blobs(tarball, outfile, anode_idx, density=1):
+    """Convert one cluster tarball to a bee JSON.  Returns True on success.
+
+    The return code MUST be checked by the caller: this used to be a bare
+    os.system() whose status was discarded, so when every masked file failed
+    (KeyError: 'measure' -- the geometry-only masked fork has no measure nodes)
+    the script still went on to zip up an active-only upload and print a
+    perfectly healthy-looking bee URL.  Half the output vanished silently.
+    """
     speed, x0 = _ANODE_PARAMS.get(anode_idx, _DEFAULT_PARAMS)
     cmd = ('wirecell-img bee-blobs -g protodunevd -s uniform -d %f'
            ' --speed "%s" --t0 "0*us" --x0 "%s"'
            ' -o %s %s') % (density, speed, x0, outfile, tarball)
     print(cmd)
-    os.system(cmd)
+    rc = os.system(cmd)
+    rc = os.waitstatus_to_exitcode(rc) if os.name == 'posix' else rc
+    if rc != 0:
+        print('ERROR: bee-blobs failed (exit %d) for %s' % (rc, tarball),
+              file=sys.stderr)
+        return False
+    if not os.path.exists(outfile):
+        print('ERROR: bee-blobs reported success but wrote no %s' % outfile,
+              file=sys.stderr)
+        return False
+    return True
 
 
 def main(active_files, masked_files):
@@ -61,15 +82,26 @@ def main(active_files, masked_files):
         os.system('rm -f upload.zip')
     os.system('mkdir -p data/0')
 
-    for fp in active_files:
-        idx = _anode_idx(fp)
-        bee_blobs(fp, 'data/0/0-apa%d-active.json' % idx, idx)
+    failed = []
+    for kind, files in (('active', active_files), ('masked', masked_files)):
+        for fp in files:
+            idx = _anode_idx(fp)
+            out = 'data/0/0-apa%d-%s.json' % (idx, kind)
+            if not bee_blobs(fp, out, idx):
+                failed.append(fp)
 
-    for fp in masked_files:
-        idx = _anode_idx(fp)
-        bee_blobs(fp, 'data/0/0-apa%d-masked.json' % idx, idx)
+    if failed:
+        print('\nERROR: %d of %d cluster file(s) failed to convert:'
+              % (len(failed), len(active_files) + len(masked_files)),
+              file=sys.stderr)
+        for fp in failed:
+            print('  ' + os.path.basename(fp), file=sys.stderr)
+        print('Refusing to upload a partial set -- fix the conversion or drop\n'
+              'the offending files explicitly.', file=sys.stderr)
+        return 1
 
     os.system('zip -r upload data')
+    return 0
 
 
 if __name__ == "__main__":
@@ -108,4 +140,4 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    main(active_files, masked_files)
+    sys.exit(main(active_files, masked_files))

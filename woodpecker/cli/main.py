@@ -10,7 +10,6 @@ Commands are organised into three groups:
 from __future__ import annotations
 
 import argparse
-import sys
 
 from woodpecker.cli import (
     # workflow
@@ -21,6 +20,7 @@ from woodpecker.cli import (
     cmd_compare_waveforms,
     cmd_extract_track_waveform,
     # wct
+    cmd_run_nf,
     cmd_run_nfsp,
     cmd_run_img,
     cmd_run_clustering,
@@ -38,7 +38,7 @@ def main(argv=None) -> None:
             "WireCell targeted region selection and debugging tool.\n\n"
             "Commands are grouped into:\n"
             "  Workflow : select, mask, extract-tracks, select-refine, compare-waveforms, extract-track-waveform\n"
-            "  WCT      : run-nfsp, run-img, run-clustering, run-sim-check  (require wire-cell)\n"
+            "  WCT      : run-nf, run-nfsp, run-img, run-clustering, run-sim-check  (require wire-cell)\n"
             "  Helpers  : plot-frames, frames-to-root (Magnify format)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -57,6 +57,7 @@ def main(argv=None) -> None:
     cmd_extract_track_waveform.add_parser(subparsers)
 
     # ── WCT commands (require wire-cell) ──────────────────────────────────────
+    cmd_run_nf.add_parser(subparsers)
     cmd_run_nfsp.add_parser(subparsers)
     cmd_run_img.add_parser(subparsers)
     cmd_run_clustering.add_parser(subparsers)
